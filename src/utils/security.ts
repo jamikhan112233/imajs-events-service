@@ -64,13 +64,14 @@ function toHex(value: Uint8Array): string {
     .join('')
 }
 
-function fromHex(value: string): Uint8Array {
+function fromHex(value: string): ArrayBuffer {
   if (!/^[0-9a-f]+$/i.test(value) || value.length % 2 !== 0) {
     throw new Error('Invalid hex value')
   }
-  const output = new Uint8Array(value.length / 2)
+  const buffer = new ArrayBuffer(value.length / 2)
+  const output = new Uint8Array(buffer)
   for (let index = 0; index < output.length; index++) {
     output[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16)
   }
-  return output
+  return buffer
 }
