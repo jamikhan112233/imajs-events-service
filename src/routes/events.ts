@@ -392,6 +392,7 @@ function sanitizeProfile(value: unknown) {
     minimumLootValue: integerValue(profile.minimumLootValue, 0, 2_147_483_647, 0),
     allowedLootItems: sanitizeItemRules(profile.allowedLootItems),
     ignoredLootItems: sanitizeItemRules(profile.ignoredLootItems),
+    itemValueOverrides: sanitizeItemValueOverrides(profile.itemValueOverrides),
     lootScreenshotsEnabled: profile.lootScreenshotsEnabled === true,
     levelEnabled: profile.levelEnabled === true,
     deathEnabled: profile.deathEnabled === true,
@@ -415,6 +416,19 @@ function sanitizeItemRules(value: unknown): string[] {
         rules.findIndex((candidate) => candidate.toLocaleLowerCase() === rule.toLocaleLowerCase()) === index
     )
     .slice(0, 500)
+}
+
+function sanitizeItemValueOverrides(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const unique = new Map<string, [string, number]>()
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = stringValue(rawKey, 100)
+    if (!key) continue
+    const amount = integerValue(rawValue, 0, Number.MAX_SAFE_INTEGER, 0)
+    unique.set(key.toLocaleLowerCase(), [key, amount])
+    if (unique.size >= 500) break
+  }
+  return Object.fromEntries(unique.values())
 }
 
 function lootItemAllowed(
