@@ -1,0 +1,30 @@
+{
+  "name": "imajs-events-service",
+  "version": "0.1.0",
+  "description": "Cloudflare Worker enrollment and event service for the Imaj's Events RuneLite plugin",
+  "type": "module",
+  "main": "src/worker.tsx",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "migrate": "wrangler d1 migrations apply DB --remote",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx}\""
+  },
+  "dependencies": {
+    "hono": "^4.12.16"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.35.0",
+    "@hono/vite-dev-server": "^0.25.0",
+    "prettier": "3.9.6",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.2",
+    "wrangler": "^4.87.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
