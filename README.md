@@ -42,6 +42,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 {
   "lootEnabled": true,
   "minimumLootValue": 1000000,
+  "allowedLootItems": ["Twisted bow", "Godsword shard *", "20997"],
+  "ignoredLootItems": ["Coins"],
   "levelEnabled": true,
   "deathEnabled": true,
   "killCountEnabled": true,
@@ -55,6 +57,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   ]
 }
 ```
+
+Loot is received from RuneLite's Loot Tracker integration as one event per distinct item stack. `minimumLootValue` is applied per stack. `allowedLootItems` is an allowlist (empty means all), while `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates these organizer-owned rules before saving or forwarding every loot event.
 
 Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
 
@@ -102,6 +106,8 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions' \
     "profile": {
       "lootEnabled": true,
       "minimumLootValue": 1000000,
+      "allowedLootItems": [],
+      "ignoredLootItems": [],
       "levelEnabled": true,
       "deathEnabled": true,
       "killCountEnabled": true,
