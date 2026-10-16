@@ -12,7 +12,15 @@ import {
 type AppContext = Context<{ Bindings: Bindings }>
 
 const RSN_PATTERN = /^[A-Za-z0-9 _-]{1,12}$/
-const EVENT_TYPES = new Set(['LOOT', 'LEVEL', 'DEATH'])
+const EVENT_TYPES = new Set([
+  'LOOT',
+  'LEVEL',
+  'DEATH',
+  'KILL_COUNT',
+  'SPEEDRUN',
+  'CUSTOM_CHAT',
+])
+const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
 
 export async function enrollRoute(c: AppContext): Promise<Response> {
   const body = await safeJson(c)
@@ -147,14 +155,26 @@ export async function rsnChangeRoute(c: AppContext): Promise<Response> {
 export async function eventRoute(c: AppContext): Promise<Response> {
   const auth = await authenticate(c)
   if (auth instanceof Response) return auth
-  const body = await safeJson(c)
+  const eventRequest = await readEventRequest(c)
+  if (eventRequest instanceof Response) return eventRequest
+  const { body, screenshot } = eventRequest
   const type = stringValue(body.type, 20).toUpperCase()
   if (!EVENT_TYPES.has(type)) return error(c, 'Unsupported event type', 400)
   if (!eventAllowed(auth.competition, type, body)) {
     return error(c, 'This event is disabled by the competition profile', 403)
   }
 
-  const safePayload = sanitizeEvent(type, body)
+  const profile = sanitizeProfile(parseObject(auth.competition.profile_json))
+  if (screenshot && (type !== 'KILL_COUNT' || !profile.killCountScreenshotsEnabled)) {
+    return error(c, 'Screenshots are disabled for this event', 403)
+  }
+  if (type === 'CUSTOM_CHAT') {
+    body.matchedRule = profile.customChatMessages.find((rule) =>
+      wildcardMatch(rule, stringValue(body.message, 500))
+    ) ?? ''
+  }
+
+  const safePayload = sanitizeEvent(type, body, profile.setupCaptureEnabled)
   const eventId = crypto.randomUUID()
   await c.env.DB.prepare(
     `INSERT INTO competition_events (id, participant_id, event_type, payload_json)
@@ -168,7 +188,8 @@ export async function eventRoute(c: AppContext): Promise<Response> {
     auth.competition.name,
     auth.participant.rsn,
     type,
-    safePayload
+    safePayload,
+    screenshot
   )
   if (!forwarded) return error(c, 'Event saved but webhook delivery failed', 502)
   return c.json({ status: 'accepted', eventId }, 202)
@@ -340,11 +361,23 @@ function profileFor(competition: Competition, rsn: string) {
 
 function sanitizeProfile(value: unknown) {
   const profile = value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+  const customChatMessages = Array.isArray(profile.customChatMessages)
+    ? profile.customChatMessages
+        .map((rule) => stringValue(rule, 200))
+        .filter(Boolean)
+        .slice(0, 50)
+    : []
   return {
     lootEnabled: profile.lootEnabled !== false,
     minimumLootValue: integerValue(profile.minimumLootValue, 0, 2_147_483_647, 0),
     levelEnabled: profile.levelEnabled === true,
     deathEnabled: profile.deathEnabled === true,
+    killCountEnabled: profile.killCountEnabled === true,
+    setupCaptureEnabled: profile.setupCaptureEnabled === true,
+    killCountScreenshotsEnabled: profile.killCountScreenshotsEnabled === true,
+    speedrunEnabled: profile.speedrunEnabled === true,
+    customChatEnabled: profile.customChatEnabled === true,
+    customChatMessages,
   }
 }
 
@@ -355,10 +388,20 @@ function eventAllowed(competition: Competition, type: string, body: Record<strin
   }
   if (type === 'LEVEL') return profile.levelEnabled
   if (type === 'DEATH') return profile.deathEnabled
+  if (type === 'KILL_COUNT') return profile.killCountEnabled
+  if (type === 'SPEEDRUN') return profile.speedrunEnabled
+  if (type === 'CUSTOM_CHAT') {
+    const message = stringValue(body.message, 500)
+    return profile.customChatEnabled && profile.customChatMessages.some((rule) => wildcardMatch(rule, message))
+  }
   return false
 }
 
-function sanitizeEvent(type: string, body: Record<string, unknown>): Record<string, unknown> {
+function sanitizeEvent(
+  type: string,
+  body: Record<string, unknown>,
+  setupCaptureEnabled: boolean
+): Record<string, unknown> {
   if (type === 'LOOT') {
     const items = Array.isArray(body.items)
       ? body.items.slice(0, 64).map((item) => {
@@ -382,6 +425,33 @@ function sanitizeEvent(type: string, body: Record<string, unknown>): Record<stri
       level: integerValue(body.level, 1, 126, 1),
     }
   }
+  if (type === 'KILL_COUNT') {
+    const payload: Record<string, unknown> = {
+      source: stringValue(body.source, 100),
+      killCount: integerValue(body.killCount, 0, 2_147_483_647, 0),
+    }
+    if (setupCaptureEnabled) {
+      payload.equipment = sanitizeSetupItems(body.equipment)
+      payload.inventory = sanitizeSetupItems(body.inventory)
+      payload.equipmentValue = integerValue(body.equipmentValue, 0, Number.MAX_SAFE_INTEGER, 0)
+      payload.inventoryValue = integerValue(body.inventoryValue, 0, Number.MAX_SAFE_INTEGER, 0)
+      payload.setupTotalValue = integerValue(body.setupTotalValue, 0, Number.MAX_SAFE_INTEGER, 0)
+    }
+    return payload
+  }
+  if (type === 'SPEEDRUN') {
+    return {
+      label: stringValue(body.label, 40),
+      duration: stringValue(body.duration, 30),
+      message: stringValue(body.message, 500),
+    }
+  }
+  if (type === 'CUSTOM_CHAT') {
+    return {
+      matchedRule: stringValue(body.matchedRule, 200),
+      message: stringValue(body.message, 500),
+    }
+  }
   return {}
 }
 
@@ -390,30 +460,39 @@ async function forwardToDiscord(
   competition: string,
   rsn: string,
   type: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  screenshot?: File
 ): Promise<boolean> {
-  const description =
-    type === 'LOOT'
-      ? `Received loot from **${escapeDiscord(String(payload.source))}** worth **${Number(payload.totalValue).toLocaleString()} gp**.`
-      : type === 'LEVEL'
-        ? `Reached **${escapeDiscord(String(payload.skill))} ${payload.level}**.`
-        : 'Died in game.'
-  const response = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      username: "Imaj's Events",
-      allowed_mentions: { parse: [] },
-      embeds: [
-        {
-          title: `${competition}: ${rsn}`,
-          description,
-          color: type === 'DEATH' ? 0xc0392b : 0x7e57c2,
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    }),
-  })
+  const embed: Record<string, unknown> = {
+    title: `${competition}: ${rsn}`,
+    description: discordDescription(type, payload),
+    color: type === 'DEATH' ? 0xc0392b : 0x7e57c2,
+    timestamp: new Date().toISOString(),
+  }
+  if (type === 'KILL_COUNT' && Object.hasOwn(payload, 'setupTotalValue')) {
+    const fields = setupFields(payload)
+    if (fields.length > 0) embed.fields = fields
+  }
+  if (screenshot) embed.image = { url: 'attachment://completion.jpg' }
+
+  const discordPayload = {
+    username: "Imaj's Events",
+    allowed_mentions: { parse: [] },
+    embeds: [embed],
+  }
+  let response: Response
+  if (screenshot) {
+    const form = new FormData()
+    form.set('payload_json', JSON.stringify(discordPayload))
+    form.set('files[0]', screenshot, 'completion.jpg')
+    response = await fetch(webhookUrl, { method: 'POST', body: form })
+  } else {
+    response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(discordPayload),
+    })
+  }
   return response.ok
 }
 
@@ -458,6 +537,101 @@ function integerValue(value: unknown, minimum: number, maximum: number, fallback
   return Math.min(maximum, Math.max(minimum, Math.trunc(parsed)))
 }
 
+function sanitizeSetupItems(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value.slice(0, 32).map((item) => {
+    const candidate = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+    return {
+      itemId: integerValue(candidate.itemId, 0, 100_000, 0),
+      name: stringValue(candidate.name, 100),
+      quantity: integerValue(candidate.quantity, 1, 2_147_483_647, 1),
+      unitPrice: integerValue(candidate.unitPrice, 0, 2_147_483_647, 0),
+      totalValue: integerValue(candidate.totalValue, 0, Number.MAX_SAFE_INTEGER, 0),
+    }
+  })
+}
+
+function wildcardMatch(pattern: string, value: string): boolean {
+  const expected = pattern.toLocaleLowerCase()
+  const actual = value.toLocaleLowerCase()
+  const parts = expected.split('*')
+  let position = 0
+  if (!expected.startsWith('*') && !actual.startsWith(parts[0])) return false
+  for (const part of parts) {
+    if (!part) continue
+    const found = actual.indexOf(part, position)
+    if (found < 0) return false
+    position = found + part.length
+  }
+  return expected.endsWith('*') || actual.endsWith(parts.at(-1) ?? '')
+}
+
+function discordDescription(type: string, payload: Record<string, unknown>): string {
+  if (type === 'LOOT') {
+    return `Received loot from **${escapeDiscord(String(payload.source))}** worth **${formatGp(payload.totalValue)} gp**.`
+  }
+  if (type === 'LEVEL') {
+    return `Reached **${escapeDiscord(String(payload.skill))} ${payload.level}**.`
+  }
+  if (type === 'KILL_COUNT') {
+    const setup = Object.hasOwn(payload, 'setupTotalValue')
+      ? ` Current setup value: **${formatGp(payload.setupTotalValue)} gp**.`
+      : ''
+    return `Completed **${escapeDiscord(String(payload.source))}** at kill count **${payload.killCount}**.${setup}`
+  }
+  if (type === 'SPEEDRUN') {
+    return `Recorded **${escapeDiscord(String(payload.label))} ${escapeDiscord(String(payload.duration))}**.\n${escapeDiscordLong(String(payload.message))}`
+  }
+  if (type === 'CUSTOM_CHAT') {
+    return `Matched event rule **${escapeDiscord(String(payload.matchedRule))}**.\n${escapeDiscordLong(String(payload.message))}`
+  }
+  return 'Died in game.'
+}
+
+function setupFields(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const fields: Array<Record<string, unknown>> = []
+  const equipment = formatSetupItems(payload.equipment)
+  const inventory = formatSetupItems(payload.inventory)
+  if (equipment) {
+    fields.push({
+      name: `Equipment — ${formatGp(payload.equipmentValue)} gp`,
+      value: equipment,
+      inline: false,
+    })
+  }
+  if (inventory) {
+    fields.push({
+      name: `Inventory — ${formatGp(payload.inventoryValue)} gp`,
+      value: inventory,
+      inline: false,
+    })
+  }
+  return fields
+}
+
+function formatSetupItems(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  const lines = value.map((item) => {
+    const candidate = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+    const name = escapeDiscord(String(candidate.name || `Item ${candidate.itemId}`))
+    return `${name} × ${candidate.quantity} — ${formatGp(candidate.totalValue)} gp`
+  })
+  let result = ''
+  for (const line of lines) {
+    const next = result ? `${result}\n${line}` : line
+    if (next.length > 1024) {
+      return `${result.slice(0, 1018)}\n…`
+    }
+    result = next
+  }
+  return result
+}
+
+function formatGp(value: unknown): string {
+  const amount = Number(value ?? 0)
+  return Number.isFinite(amount) ? Math.max(0, Math.trunc(amount)).toLocaleString('en-US') : '0'
+}
+
 function parseObject(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value)
@@ -476,8 +650,42 @@ async function safeJson(c: AppContext): Promise<Record<string, unknown>> {
   }
 }
 
+async function readEventRequest(
+  c: AppContext
+): Promise<{ body: Record<string, unknown>; screenshot?: File } | Response> {
+  const contentType = c.req.header('Content-Type') ?? ''
+  if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
+    return { body: await safeJson(c) }
+  }
+  try {
+    const form = await c.req.formData()
+    const payloadJson = form.get('payload_json')
+    if (typeof payloadJson !== 'string' || payloadJson.length > 100_000) {
+      return error(c, 'A valid event payload is required', 400)
+    }
+    const parsed: unknown = JSON.parse(payloadJson)
+    if (!parsed || typeof parsed !== 'object') {
+      return error(c, 'A valid event payload is required', 400)
+    }
+    const file = form.get('file')
+    if (file !== null && !(file instanceof File)) {
+      return error(c, 'The screenshot upload is invalid', 400)
+    }
+    if (file && (file.type !== 'image/jpeg' || file.size > MAX_SCREENSHOT_BYTES)) {
+      return error(c, 'Screenshots must be JPEG files no larger than 8 MiB', 400)
+    }
+    return { body: parsed as Record<string, unknown>, screenshot: file ?? undefined }
+  } catch {
+    return error(c, 'The multipart event payload is invalid', 400)
+  }
+}
+
 function escapeDiscord(value: string): string {
   return value.replace(/([\\*_~`>|])/g, '\\$1').slice(0, 100)
+}
+
+function escapeDiscordLong(value: string): string {
+  return value.replace(/([\\*_~`>|])/g, '\\$1').slice(0, 500)
 }
 
 function error(c: AppContext, message: string, status: number): Response {
