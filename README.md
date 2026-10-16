@@ -63,13 +63,13 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 
 Loot is received from RuneLite's Loot Tracker integration as one grouped event per source. `minimumLootValue` is still applied to each stack. `allowedLootItems` is an allowlist (empty means all), while `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates every item, removes nonqualifying stacks, and sends the remaining source drop in one Discord message.
 
-`itemValueOverrides` maps exact case-insensitive item names or canonical numeric item IDs to organizer-defined GP values. The plugin checks an ID override first, then a name override, then current GE value for tradeables, and finally the built-in guide value for untradeables or missing GE prices.
+`itemValueOverrides` maps exact case-insensitive item names or canonical numeric item IDs to organizer-defined GP values. The plugin checks an ID override first, then a name override, then RuneLite's current price (including untradeable-to-tradeable `ItemMapping` values), and finally the built-in guide value when no mapped/current price is available.
 
 Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
 
-`setupCaptureEnabled` permits one combined equipment-plus-inventory total based on RuneLite's Jagex guide-price source. The KC Discord text omits that value; the locally rendered screenshot panel contains its item-by-item audit. Individual setup item values are not submitted to the service. `killCountScreenshotsEnabled` and `lootScreenshotsEnabled` permit their respective JPEG uploads, but the player must also enable each screenshot type locally in RuneLite.
+`setupCaptureEnabled` permits one combined equipment-plus-inventory risk-value total. The KC Discord text omits that value; the locally rendered screenshot panel contains its item-by-item audit and identifies override, GE, mapped, and guide fallback values. Individual setup item values are not submitted to the service. `killCountScreenshotsEnabled` and `lootScreenshotsEnabled` permit their respective JPEG uploads, but the player must also enable each screenshot type locally in RuneLite.
 
-`specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time, plus starting/ending guide totals and guide value used.
+`specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time, plus starting/ending risk totals and risk value used.
 
 ## Deploy
 
