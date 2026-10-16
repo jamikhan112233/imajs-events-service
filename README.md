@@ -10,7 +10,7 @@ Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It manages
 - RSN-change codes are participant-specific, single-use, stored only as hashes, and expire after 15 minutes.
 - Discord webhook URLs are never returned to plugin clients.
 - Every event type and custom system-message pattern is revalidated against the server-owned competition profile.
-- Screenshots are accepted only for enabled kill-count events, must be JPEG, and are limited to 8 MiB.
+- Screenshots are accepted only for enabled loot, kill-count, and Special Kill events; each file must be JPEG and is limited to 8 MiB.
 - Screenshot bytes are forwarded directly to Discord and are not stored in D1.
 - Discord mentions are disabled in forwarded messages.
 
@@ -44,11 +44,13 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   "minimumLootValue": 1000000,
   "allowedLootItems": ["Twisted bow", "Godsword shard *", "20997"],
   "ignoredLootItems": ["Coins"],
+  "lootScreenshotsEnabled": false,
   "levelEnabled": true,
   "deathEnabled": true,
   "killCountEnabled": true,
   "setupCaptureEnabled": true,
   "killCountScreenshotsEnabled": false,
+  "specialKillEnabled": false,
   "speedrunEnabled": true,
   "customChatEnabled": true,
   "customChatMessages": [
@@ -62,7 +64,9 @@ Loot is received from RuneLite's Loot Tracker integration as one event per disti
 
 Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
 
-`setupCaptureEnabled` permits equipment and inventory names, quantities, and RuneLite Grand Exchange values on kill-count/completion events. `killCountScreenshotsEnabled` permits a JPEG upload, but the player must also enable screenshots locally in RuneLite.
+`setupCaptureEnabled` permits one combined equipment-plus-inventory total based on RuneLite's Jagex guide-price source. Individual setup item values are not submitted. `killCountScreenshotsEnabled` and `lootScreenshotsEnabled` permit their respective JPEG uploads, but the player must also enable each screenshot type locally in RuneLite.
+
+`specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time, plus starting/ending guide totals and guide value used.
 
 ## Deploy
 
@@ -108,11 +112,13 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions' \
       "minimumLootValue": 1000000,
       "allowedLootItems": [],
       "ignoredLootItems": [],
+      "lootScreenshotsEnabled": false,
       "levelEnabled": true,
       "deathEnabled": true,
       "killCountEnabled": true,
       "setupCaptureEnabled": true,
       "killCountScreenshotsEnabled": false,
+      "specialKillEnabled": false,
       "speedrunEnabled": true,
       "customChatEnabled": true,
       "customChatMessages": ["New personal best: *"]

@@ -12,11 +12,13 @@ import {
 type AppContext = Context<{ Bindings: Bindings }>
 
 const RSN_PATTERN = /^[A-Za-z0-9 _-]{1,12}$/
+const GAME_TIME_PATTERN = /^(?:\d+:){1,2}\d{2}(?:\.\d+)?$/
 const EVENT_TYPES = new Set([
   'LOOT',
   'LEVEL',
   'DEATH',
   'KILL_COUNT',
+  'SPECIAL_KILL',
   'SPEEDRUN',
   'CUSTOM_CHAT',
 ])
@@ -157,7 +159,7 @@ export async function eventRoute(c: AppContext): Promise<Response> {
   if (auth instanceof Response) return auth
   const eventRequest = await readEventRequest(c)
   if (eventRequest instanceof Response) return eventRequest
-  const { body, screenshot } = eventRequest
+  const { body, screenshot, startingScreenshot, endingScreenshot } = eventRequest
   const type = stringValue(body.type, 20).toUpperCase()
   if (!EVENT_TYPES.has(type)) return error(c, 'Unsupported event type', 400)
   if (!eventAllowed(auth.competition, type, body)) {
@@ -165,8 +167,26 @@ export async function eventRoute(c: AppContext): Promise<Response> {
   }
 
   const profile = sanitizeProfile(parseObject(auth.competition.profile_json))
-  if (screenshot && (type !== 'KILL_COUNT' || !profile.killCountScreenshotsEnabled)) {
+  if (
+    screenshot &&
+    !(
+      (type === 'KILL_COUNT' && profile.killCountScreenshotsEnabled) ||
+      (type === 'LOOT' && profile.lootScreenshotsEnabled)
+    )
+  ) {
     return error(c, 'Screenshots are disabled for this event', 403)
+  }
+  if (
+    type === 'SPECIAL_KILL' &&
+    (!profile.specialKillEnabled || !startingScreenshot || !endingScreenshot)
+  ) {
+    return error(c, 'Special Kill requires organizer approval and both screenshots', 403)
+  }
+  if (type === 'SPECIAL_KILL' && !GAME_TIME_PATTERN.test(stringValue(body.gameTime, 30))) {
+    return error(c, 'Special Kill requires an official game time', 400)
+  }
+  if (type !== 'SPECIAL_KILL' && (startingScreenshot || endingScreenshot)) {
+    return error(c, 'Special Kill screenshots are invalid for this event', 400)
   }
   if (type === 'CUSTOM_CHAT') {
     body.matchedRule = profile.customChatMessages.find((rule) =>
@@ -189,7 +209,7 @@ export async function eventRoute(c: AppContext): Promise<Response> {
     auth.participant.rsn,
     type,
     safePayload,
-    screenshot
+    { screenshot, startingScreenshot, endingScreenshot }
   )
   if (!forwarded) return error(c, 'Event saved but webhook delivery failed', 502)
   return c.json({ status: 'accepted', eventId }, 202)
@@ -372,11 +392,13 @@ function sanitizeProfile(value: unknown) {
     minimumLootValue: integerValue(profile.minimumLootValue, 0, 2_147_483_647, 0),
     allowedLootItems: sanitizeItemRules(profile.allowedLootItems),
     ignoredLootItems: sanitizeItemRules(profile.ignoredLootItems),
+    lootScreenshotsEnabled: profile.lootScreenshotsEnabled === true,
     levelEnabled: profile.levelEnabled === true,
     deathEnabled: profile.deathEnabled === true,
     killCountEnabled: profile.killCountEnabled === true,
     setupCaptureEnabled: profile.setupCaptureEnabled === true,
     killCountScreenshotsEnabled: profile.killCountScreenshotsEnabled === true,
+    specialKillEnabled: profile.specialKillEnabled === true,
     speedrunEnabled: profile.speedrunEnabled === true,
     customChatEnabled: profile.customChatEnabled === true,
     customChatMessages,
@@ -425,6 +447,7 @@ function eventAllowed(competition: Competition, type: string, body: Record<strin
   if (type === 'LEVEL') return profile.levelEnabled
   if (type === 'DEATH') return profile.deathEnabled
   if (type === 'KILL_COUNT') return profile.killCountEnabled
+  if (type === 'SPECIAL_KILL') return profile.specialKillEnabled
   if (type === 'SPEEDRUN') return profile.speedrunEnabled
   if (type === 'CUSTOM_CHAT') {
     const message = stringValue(body.message, 500)
@@ -477,13 +500,34 @@ function sanitizeEvent(
       killCount: integerValue(body.killCount, 0, 2_147_483_647, 0),
     }
     if (setupCaptureEnabled) {
-      payload.equipment = sanitizeSetupItems(body.equipment)
-      payload.inventory = sanitizeSetupItems(body.inventory)
-      payload.equipmentValue = integerValue(body.equipmentValue, 0, Number.MAX_SAFE_INTEGER, 0)
-      payload.inventoryValue = integerValue(body.inventoryValue, 0, Number.MAX_SAFE_INTEGER, 0)
       payload.setupTotalValue = integerValue(body.setupTotalValue, 0, Number.MAX_SAFE_INTEGER, 0)
+      payload.priceBasis = 'Jagex guide price'
     }
     return payload
+  }
+  if (type === 'SPECIAL_KILL') {
+    const startingGuideValue = integerValue(
+      body.startingGuideValue,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      0
+    )
+    const endingGuideValue = integerValue(
+      body.endingGuideValue,
+      0,
+      Number.MAX_SAFE_INTEGER,
+      0
+    )
+    return {
+      source: stringValue(body.source, 100),
+      killCount: integerValue(body.killCount, 0, 2_147_483_647, 0),
+      gameTime: stringValue(body.gameTime, 30),
+      gameTimeMessage: stringValue(body.gameTimeMessage, 500),
+      startingGuideValue,
+      endingGuideValue,
+      guideValueUsed: Math.max(0, startingGuideValue - endingGuideValue),
+      priceBasis: 'Jagex guide price',
+    }
   }
   if (type === 'SPEEDRUN') {
     return {
@@ -507,7 +551,11 @@ async function forwardToDiscord(
   rsn: string,
   type: string,
   payload: Record<string, unknown>,
-  screenshot?: File
+  screenshots: {
+    screenshot?: File
+    startingScreenshot?: File
+    endingScreenshot?: File
+  }
 ): Promise<boolean> {
   const embed: Record<string, unknown> = {
     title: `${competition}: ${rsn}`,
@@ -515,22 +563,49 @@ async function forwardToDiscord(
     color: type === 'DEATH' ? 0xc0392b : 0x7e57c2,
     timestamp: new Date().toISOString(),
   }
-  if (type === 'KILL_COUNT' && Object.hasOwn(payload, 'setupTotalValue')) {
-    const fields = setupFields(payload)
-    if (fields.length > 0) embed.fields = fields
+  if (screenshots.screenshot) embed.image = { url: 'attachment://completion.jpg' }
+
+  const embeds: Array<Record<string, unknown>> = [embed]
+  if (type === 'SPECIAL_KILL' && screenshots.startingScreenshot && screenshots.endingScreenshot) {
+    embed.image = { url: 'attachment://special-kill-end.jpg' }
+    embeds.push({
+      title: 'Starting setup',
+      color: 0x5e4b8b,
+      image: { url: 'attachment://special-kill-start.jpg' },
+    })
   }
-  if (screenshot) embed.image = { url: 'attachment://completion.jpg' }
 
   const discordPayload = {
     username: "Imaj's Events",
     allowed_mentions: { parse: [] },
-    embeds: [embed],
+    embeds,
   }
   let response: Response
-  if (screenshot) {
+  if (
+    screenshots.screenshot ||
+    screenshots.startingScreenshot ||
+    screenshots.endingScreenshot
+  ) {
     const form = new FormData()
     form.set('payload_json', JSON.stringify(discordPayload))
-    form.set('files[0]', screenshot, 'completion.jpg')
+    let fileIndex = 0
+    if (screenshots.screenshot) {
+      form.set(`files[${fileIndex++}]`, screenshots.screenshot, 'completion.jpg')
+    }
+    if (screenshots.startingScreenshot) {
+      form.set(
+        `files[${fileIndex++}]`,
+        screenshots.startingScreenshot,
+        'special-kill-start.jpg'
+      )
+    }
+    if (screenshots.endingScreenshot) {
+      form.set(
+        `files[${fileIndex}]`,
+        screenshots.endingScreenshot,
+        'special-kill-end.jpg'
+      )
+    }
     response = await fetch(webhookUrl, { method: 'POST', body: form })
   } else {
     response = await fetch(webhookUrl, {
@@ -583,20 +658,6 @@ function integerValue(value: unknown, minimum: number, maximum: number, fallback
   return Math.min(maximum, Math.max(minimum, Math.trunc(parsed)))
 }
 
-function sanitizeSetupItems(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return []
-  return value.slice(0, 32).map((item) => {
-    const candidate = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
-    return {
-      itemId: integerValue(candidate.itemId, 0, 100_000, 0),
-      name: stringValue(candidate.name, 100),
-      quantity: integerValue(candidate.quantity, 1, 2_147_483_647, 1),
-      unitPrice: integerValue(candidate.unitPrice, 0, 2_147_483_647, 0),
-      totalValue: integerValue(candidate.totalValue, 0, Number.MAX_SAFE_INTEGER, 0),
-    }
-  })
-}
-
 function wildcardMatch(pattern: string, value: string): boolean {
   const expected = pattern.toLocaleLowerCase()
   const actual = value.toLocaleLowerCase()
@@ -621,9 +682,19 @@ function discordDescription(type: string, payload: Record<string, unknown>): str
   }
   if (type === 'KILL_COUNT') {
     const setup = Object.hasOwn(payload, 'setupTotalValue')
-      ? ` Current setup value: **${formatGp(payload.setupTotalValue)} gp**.`
+      ? ` Total guide setup value: **${formatGp(payload.setupTotalValue)} gp**.`
       : ''
     return `Completed **${escapeDiscord(String(payload.source))}** at kill count **${payload.killCount}**.${setup}`
+  }
+  if (type === 'SPECIAL_KILL') {
+    return [
+      `**Special Kill — ${escapeDiscord(String(payload.source))}**`,
+      `Kill count: **${payload.killCount}**`,
+      `Official game time: **${escapeDiscord(String(payload.gameTime))}**`,
+      `Starting guide value: **${formatGp(payload.startingGuideValue)} gp**`,
+      `Ending guide value: **${formatGp(payload.endingGuideValue)} gp**`,
+      `Guide value used: **${formatGp(payload.guideValueUsed)} gp**`,
+    ].join('\n')
   }
   if (type === 'SPEEDRUN') {
     return `Recorded **${escapeDiscord(String(payload.label))} ${escapeDiscord(String(payload.duration))}**.\n${escapeDiscordLong(String(payload.message))}`
@@ -632,45 +703,6 @@ function discordDescription(type: string, payload: Record<string, unknown>): str
     return `Matched event rule **${escapeDiscord(String(payload.matchedRule))}**.\n${escapeDiscordLong(String(payload.message))}`
   }
   return 'Died in game.'
-}
-
-function setupFields(payload: Record<string, unknown>): Array<Record<string, unknown>> {
-  const fields: Array<Record<string, unknown>> = []
-  const equipment = formatSetupItems(payload.equipment)
-  const inventory = formatSetupItems(payload.inventory)
-  if (equipment) {
-    fields.push({
-      name: `Equipment — ${formatGp(payload.equipmentValue)} gp`,
-      value: equipment,
-      inline: false,
-    })
-  }
-  if (inventory) {
-    fields.push({
-      name: `Inventory — ${formatGp(payload.inventoryValue)} gp`,
-      value: inventory,
-      inline: false,
-    })
-  }
-  return fields
-}
-
-function formatSetupItems(value: unknown): string {
-  if (!Array.isArray(value)) return ''
-  const lines = value.map((item) => {
-    const candidate = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
-    const name = escapeDiscord(String(candidate.name || `Item ${candidate.itemId}`))
-    return `${name} × ${candidate.quantity} — ${formatGp(candidate.totalValue)} gp`
-  })
-  let result = ''
-  for (const line of lines) {
-    const next = result ? `${result}\n${line}` : line
-    if (next.length > 1024) {
-      return `${result.slice(0, 1018)}\n…`
-    }
-    result = next
-  }
-  return result
 }
 
 function formatGp(value: unknown): string {
@@ -698,7 +730,12 @@ async function safeJson(c: AppContext): Promise<Record<string, unknown>> {
 
 async function readEventRequest(
   c: AppContext
-): Promise<{ body: Record<string, unknown>; screenshot?: File } | Response> {
+): Promise<{
+  body: Record<string, unknown>
+  screenshot?: File
+  startingScreenshot?: File
+  endingScreenshot?: File
+} | Response> {
   const contentType = c.req.header('Content-Type') ?? ''
   if (!contentType.toLowerCase().startsWith('multipart/form-data')) {
     return { body: await safeJson(c) }
@@ -713,17 +750,28 @@ async function readEventRequest(
     if (!parsed || typeof parsed !== 'object') {
       return error(c, 'A valid event payload is required', 400)
     }
-    const file = form.get('file')
-    if (file !== null && !(file instanceof File)) {
-      return error(c, 'The screenshot upload is invalid', 400)
-    }
-    if (file && (file.type !== 'image/jpeg' || file.size > MAX_SCREENSHOT_BYTES)) {
+    const file = validScreenshot(form.get('file'))
+    const startFile = validScreenshot(form.get('start_file'))
+    const endFile = validScreenshot(form.get('end_file'))
+    if (file === false || startFile === false || endFile === false) {
       return error(c, 'Screenshots must be JPEG files no larger than 8 MiB', 400)
     }
-    return { body: parsed as Record<string, unknown>, screenshot: file ?? undefined }
+    return {
+      body: parsed as Record<string, unknown>,
+      screenshot: file ?? undefined,
+      startingScreenshot: startFile ?? undefined,
+      endingScreenshot: endFile ?? undefined,
+    }
   } catch {
     return error(c, 'The multipart event payload is invalid', 400)
   }
+}
+
+function validScreenshot(value: FormDataEntryValue | null): File | null | false {
+  if (value === null) return null
+  if (!(value instanceof File)) return false
+  if (value.type !== 'image/jpeg' || value.size > MAX_SCREENSHOT_BYTES) return false
+  return value
 }
 
 function escapeDiscord(value: string): string {
