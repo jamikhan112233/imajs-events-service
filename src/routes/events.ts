@@ -194,7 +194,7 @@ export async function eventRoute(c: AppContext): Promise<Response> {
     ) ?? ''
   }
 
-  const safePayload = sanitizeEvent(type, body, profile.setupCaptureEnabled)
+  const safePayload = sanitizeEvent(type, body, profile)
   const eventId = crypto.randomUUID()
   await c.env.DB.prepare(
     `INSERT INTO competition_events (id, participant_id, event_type, payload_json)
@@ -436,12 +436,13 @@ function lootRuleMatches(rule: string, itemName: string, itemId: number): boolea
 function eventAllowed(competition: Competition, type: string, body: Record<string, unknown>): boolean {
   const profile = sanitizeProfile(parseObject(competition.profile_json))
   if (type === 'LOOT') {
-    const itemName = stringValue(body.itemName, 100)
-    const itemId = integerValue(body.itemId, 0, 100_000, 0)
     return (
       profile.lootEnabled &&
-      Number(body.totalValue ?? 0) >= profile.minimumLootValue &&
-      lootItemAllowed(profile, itemName, itemId)
+      lootItemsFromBody(body).some(
+        (item) =>
+          item.totalValue >= profile.minimumLootValue &&
+          lootItemAllowed(profile, item.itemName, item.itemId)
+      )
     )
   }
   if (type === 'LEVEL') return profile.levelEnabled
@@ -459,33 +460,18 @@ function eventAllowed(competition: Competition, type: string, body: Record<strin
 function sanitizeEvent(
   type: string,
   body: Record<string, unknown>,
-  setupCaptureEnabled: boolean
+  profile: ReturnType<typeof sanitizeProfile>
 ): Record<string, unknown> {
   if (type === 'LOOT') {
-    const legacyItem =
-      Array.isArray(body.items) && body.items[0] && typeof body.items[0] === 'object'
-        ? (body.items[0] as Record<string, unknown>)
-        : {}
-    const itemId = integerValue(body.itemId ?? legacyItem.itemId, 0, 100_000, 0)
-    const quantity = integerValue(body.quantity ?? legacyItem.quantity, 1, 2_147_483_647, 1)
-    const unitPrice = integerValue(
-      body.unitPrice ?? legacyItem.unitPrice,
-      0,
-      Number.MAX_SAFE_INTEGER,
-      0
+    const items = lootItemsFromBody(body).filter(
+      (item) =>
+        item.totalValue >= profile.minimumLootValue &&
+        lootItemAllowed(profile, item.itemName, item.itemId)
     )
     return {
       source: stringValue(body.source, 100),
-      itemId,
-      itemName: stringValue(body.itemName, 100) || `Item ${itemId}`,
-      quantity,
-      unitPrice,
-      totalValue: integerValue(
-        body.totalValue,
-        0,
-        Number.MAX_SAFE_INTEGER,
-        unitPrice * quantity
-      ),
+      items,
+      totalValue: items.reduce((sum, item) => sum + item.totalValue, 0),
     }
   }
   if (type === 'LEVEL') {
@@ -499,7 +485,7 @@ function sanitizeEvent(
       source: stringValue(body.source, 100),
       killCount: integerValue(body.killCount, 0, 2_147_483_647, 0),
     }
-    if (setupCaptureEnabled) {
+    if (profile.setupCaptureEnabled) {
       payload.setupTotalValue = integerValue(body.setupTotalValue, 0, Number.MAX_SAFE_INTEGER, 0)
       payload.priceBasis = 'Jagex guide price'
     }
@@ -545,6 +531,30 @@ function sanitizeEvent(
   return {}
 }
 
+function lootItemsFromBody(body: Record<string, unknown>) {
+  const supplied = Array.isArray(body.items) ? body.items : [body]
+  return supplied
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+    .slice(0, 100)
+    .map((value) => {
+      const itemId = integerValue(value.itemId, 0, 100_000, 0)
+      const quantity = integerValue(value.quantity, 1, 2_147_483_647, 1)
+      const unitPrice = integerValue(value.unitPrice, 0, Number.MAX_SAFE_INTEGER, 0)
+      return {
+        itemId,
+        itemName: stringValue(value.itemName, 100) || `Item ${itemId}`,
+        quantity,
+        unitPrice,
+        totalValue: integerValue(
+          value.totalValue,
+          0,
+          Number.MAX_SAFE_INTEGER,
+          unitPrice * quantity
+        ),
+      }
+    })
+}
+
 async function forwardToDiscord(
   webhookUrl: string,
   competition: string,
@@ -558,9 +568,10 @@ async function forwardToDiscord(
   }
 ): Promise<boolean> {
   const embed: Record<string, unknown> = {
-    title: `${competition}: ${rsn}`,
-    description: discordDescription(type, payload),
+    title: rsn,
+    description: discordDescription(type, payload, rsn),
     color: type === 'DEATH' ? 0xc0392b : 0x7e57c2,
+    footer: { text: competition },
     timestamp: new Date().toISOString(),
   }
   if (screenshots.screenshot) embed.image = { url: 'attachment://completion.jpg' }
@@ -673,22 +684,43 @@ function wildcardMatch(pattern: string, value: string): boolean {
   return expected.endsWith('*') || actual.endsWith(parts.at(-1) ?? '')
 }
 
-function discordDescription(type: string, payload: Record<string, unknown>): string {
+function discordDescription(type: string, payload: Record<string, unknown>, rsn: string): string {
+  const player = escapeDiscord(rsn)
   if (type === 'LOOT') {
-    return `Received **${formatGp(payload.quantity)} × ${escapeDiscord(String(payload.itemName))}** from **${escapeDiscord(String(payload.source))}** worth **${formatGp(payload.totalValue)} gp**.`
+    const items = Array.isArray(payload.items)
+      ? payload.items.filter(
+          (value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object'
+        )
+      : []
+    const itemLines = items.map(
+      (item) =>
+        `• **${formatGp(item.quantity)} × ${escapeDiscord(String(item.itemName))}** — ${formatGp(item.totalValue)} gp`
+    )
+    return [
+      '**Loot Drop**',
+      '',
+      `**${player} has looted:**`,
+      ...itemLines,
+      '',
+      `**From:** ${escapeDiscord(String(payload.source))}`,
+    ].join('\n')
   }
   if (type === 'LEVEL') {
-    return `Reached **${escapeDiscord(String(payload.skill))} ${payload.level}**.`
+    return `**Level Up**\n\n**${player}** reached **${escapeDiscord(String(payload.skill))} ${payload.level}**.`
   }
   if (type === 'KILL_COUNT') {
-    const setup = Object.hasOwn(payload, 'setupTotalValue')
-      ? ` Total guide setup value: **${formatGp(payload.setupTotalValue)} gp**.`
-      : ''
-    return `Completed **${escapeDiscord(String(payload.source))}** at kill count **${payload.killCount}**.${setup}`
+    return [
+      '**Kill Count**',
+      '',
+      `**${player}** completed **${escapeDiscord(String(payload.source))}**.`,
+      `Kill count: **${payload.killCount}**`,
+    ].join('\n')
   }
   if (type === 'SPECIAL_KILL') {
     return [
-      `**Special Kill — ${escapeDiscord(String(payload.source))}**`,
+      '**Special Kill**',
+      '',
+      `**${player}** completed **${escapeDiscord(String(payload.source))}**.`,
       `Kill count: **${payload.killCount}**`,
       `Official game time: **${escapeDiscord(String(payload.gameTime))}**`,
       `Starting guide value: **${formatGp(payload.startingGuideValue)} gp**`,
@@ -697,12 +729,12 @@ function discordDescription(type: string, payload: Record<string, unknown>): str
     ].join('\n')
   }
   if (type === 'SPEEDRUN') {
-    return `Recorded **${escapeDiscord(String(payload.label))} ${escapeDiscord(String(payload.duration))}**.\n${escapeDiscordLong(String(payload.message))}`
+    return `**Speedrun**\n\n**${player}** recorded **${escapeDiscord(String(payload.label))} ${escapeDiscord(String(payload.duration))}**.\n${escapeDiscordLong(String(payload.message))}`
   }
   if (type === 'CUSTOM_CHAT') {
-    return `Matched event rule **${escapeDiscord(String(payload.matchedRule))}**.\n${escapeDiscordLong(String(payload.message))}`
+    return `**Custom Chat Message**\n\n**${player}** triggered **${escapeDiscord(String(payload.matchedRule))}**.\n${escapeDiscordLong(String(payload.message))}`
   }
-  return 'Died in game.'
+  return `**Death**\n\n**${player}** died in game.`
 }
 
 function formatGp(value: unknown): string {
