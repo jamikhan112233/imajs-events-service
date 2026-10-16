@@ -501,7 +501,7 @@ function sanitizeEvent(
     }
     if (profile.setupCaptureEnabled) {
       payload.setupTotalValue = integerValue(body.setupTotalValue, 0, Number.MAX_SAFE_INTEGER, 0)
-      payload.priceBasis = 'Jagex guide price'
+      payload.priceBasis = 'RuneLite mapped market value with Jagex guide fallback'
     }
     return payload
   }
@@ -526,7 +526,7 @@ function sanitizeEvent(
       startingGuideValue,
       endingGuideValue,
       guideValueUsed: Math.max(0, startingGuideValue - endingGuideValue),
-      priceBasis: 'Jagex guide price',
+      priceBasis: 'RuneLite mapped market value with Jagex guide fallback',
     }
   }
   if (type === 'SPEEDRUN') {
@@ -737,9 +737,9 @@ function discordDescription(type: string, payload: Record<string, unknown>, rsn:
       `**${player}** completed **${escapeDiscord(String(payload.source))}**.`,
       `Kill count: **${payload.killCount}**`,
       `Official game time: **${escapeDiscord(String(payload.gameTime))}**`,
-      `Starting guide value: **${formatGp(payload.startingGuideValue)} gp**`,
-      `Ending guide value: **${formatGp(payload.endingGuideValue)} gp**`,
-      `Guide value used: **${formatGp(payload.guideValueUsed)} gp**`,
+      `Starting risk value: **${formatGp(payload.startingGuideValue)} gp**`,
+      `Ending risk value: **${formatGp(payload.endingGuideValue)} gp**`,
+      `Risk value used: **${formatGp(payload.guideValueUsed)} gp**`,
     ].join('\n')
   }
   if (type === 'SPEEDRUN') {
