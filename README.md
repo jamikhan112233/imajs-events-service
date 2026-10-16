@@ -4,7 +4,7 @@ Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It manages
 
 ## Security model
 
-- Competition passwords use PBKDF2-SHA-256 with a random salt and 210,000 iterations.
+- Competition passwords use PBKDF2-SHA-256 with a random salt and 100,000 iterations, the maximum supported by Cloudflare Workers.
 - Raw competition passwords are never stored.
 - Enrollment tokens are random 256-bit values; only SHA-256 token hashes are stored.
 - RSN-change codes are participant-specific, single-use, stored only as hashes, and expire after 15 minutes.
