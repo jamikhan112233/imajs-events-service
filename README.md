@@ -1,8 +1,6 @@
 # Imaj's Events Service
 
-Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It extends the architecture of [`pajlads/dink-url-manager`](https://github.com/pajlads/dink-url-manager) while adding separate competition enrollment, server-owned profiles, participant identity, one-time RSN changes, event storage, and Discord forwarding.
-
-The service is independent and does not require Dink. The original project's MIT license is retained because its Cloudflare/Hono structure was used as the starting point.
+Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It manages competition enrollment, server-owned event profiles, approved player rosters, participant identity, one-time RSN changes, event storage, and Discord forwarding.
 
 ## Security model
 
@@ -11,7 +9,9 @@ The service is independent and does not require Dink. The original project's MIT
 - Enrollment tokens are random 256-bit values; only SHA-256 token hashes are stored.
 - RSN-change codes are participant-specific, single-use, stored only as hashes, and expire after 15 minutes.
 - Discord webhook URLs are never returned to plugin clients.
-- Every accepted event is checked against the server-owned competition profile.
+- Every event type and custom system-message pattern is revalidated against the server-owned competition profile.
+- Screenshots are accepted only for enabled kill-count events, must be JPEG, and are limited to 8 MiB.
+- Screenshot bytes are forwarded directly to Discord and are not stored in D1.
 - Discord mentions are disabled in forwarded messages.
 
 Treat the `ADMIN_TOKEN`, D1 database, participant enrollment tokens, and Discord webhook URLs as secrets.
@@ -25,7 +25,7 @@ Participant routes:
 | `POST` | `/api/v1/enroll` | Exchange competition credentials for an opaque token and profile |
 | `GET` | `/api/v1/profile` | Refresh the profile with an enrollment bearer token |
 | `POST` | `/api/v1/rsn-change` | Use a one-time organizer code to change the registered RSN |
-| `POST` | `/api/v1/events` | Store and forward a profile-authorized event |
+| `POST` | `/api/v1/events` | Store and forward a profile-authorized JSON or multipart event |
 
 Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 
@@ -35,6 +35,30 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 | `PATCH` | `/api/v1/admin/competitions/:slug` | Update its password, webhook, or event profile |
 | `POST` | `/api/v1/admin/competitions/:slug/players` | Add one or many approved RSNs to the roster |
 | `POST` | `/api/v1/admin/competitions/:slug/rsn-codes` | Generate a 15-minute code for one enrolled RSN |
+
+## Event profile
+
+```json
+{
+  "lootEnabled": true,
+  "minimumLootValue": 1000000,
+  "levelEnabled": true,
+  "deathEnabled": true,
+  "killCountEnabled": true,
+  "setupCaptureEnabled": true,
+  "killCountScreenshotsEnabled": false,
+  "speedrunEnabled": true,
+  "customChatEnabled": true,
+  "customChatMessages": [
+    "You have completed * Tombs of Amascut raids.",
+    "New personal best: *"
+  ]
+}
+```
+
+Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
+
+`setupCaptureEnabled` permits equipment and inventory names, quantities, and RuneLite Grand Exchange values on kill-count/completion events. `killCountScreenshotsEnabled` permits a JPEG upload, but the player must also enable screenshots locally in RuneLite.
 
 ## Deploy
 
@@ -79,7 +103,13 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions' \
       "lootEnabled": true,
       "minimumLootValue": 1000000,
       "levelEnabled": true,
-      "deathEnabled": true
+      "deathEnabled": true,
+      "killCountEnabled": true,
+      "setupCaptureEnabled": true,
+      "killCountScreenshotsEnabled": false,
+      "speedrunEnabled": true,
+      "customChatEnabled": true,
+      "customChatMessages": ["New personal best: *"]
     }
   }'
 ```
@@ -106,6 +136,6 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions/imaj-sum
 
 Send the returned code only to that participant. It expires after 15 minutes.
 
-## Attribution and license
+## License
 
-This service began from the MIT-licensed Dink URL Manager by iProdigy. The original MIT license and copyright notice are retained in `LICENSE`.
+MIT License.
