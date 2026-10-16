@@ -44,6 +44,7 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   "minimumLootValue": 1000000,
   "allowedLootItems": ["Twisted bow", "Godsword shard *", "20997"],
   "ignoredLootItems": ["Coins"],
+  "itemValueOverrides": {"Infernal max cape": 225000},
   "lootScreenshotsEnabled": false,
   "levelEnabled": true,
   "deathEnabled": true,
@@ -61,6 +62,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 ```
 
 Loot is received from RuneLite's Loot Tracker integration as one grouped event per source. `minimumLootValue` is still applied to each stack. `allowedLootItems` is an allowlist (empty means all), while `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates every item, removes nonqualifying stacks, and sends the remaining source drop in one Discord message.
+
+`itemValueOverrides` maps exact case-insensitive item names or canonical numeric item IDs to organizer-defined GP values. The plugin checks an ID override first, then a name override, then current GE value for tradeables, and finally the built-in guide value for untradeables or missing GE prices.
 
 Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
 
@@ -112,6 +115,7 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions' \
       "minimumLootValue": 1000000,
       "allowedLootItems": [],
       "ignoredLootItems": [],
+      "itemValueOverrides": {"Infernal max cape": 225000},
       "lootScreenshotsEnabled": false,
       "levelEnabled": true,
       "deathEnabled": true,
