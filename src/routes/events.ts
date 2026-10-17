@@ -167,11 +167,14 @@ export async function eventRoute(c: AppContext): Promise<Response> {
   }
 
   const profile = sanitizeProfile(parseObject(auth.competition.profile_json))
+  const safePayload = sanitizeEvent(type, body, profile)
   if (
     screenshot &&
     !(
       (type === 'KILL_COUNT' && profile.killCountScreenshotsEnabled) ||
-      (type === 'LOOT' && profile.lootScreenshotsEnabled)
+      (type === 'LOOT' &&
+        profile.lootScreenshotsEnabled &&
+        Number(safePayload.totalValue ?? 0) >= profile.minimumLootScreenshotValue)
     )
   ) {
     return error(c, 'Screenshots are disabled for this event', 403)
@@ -194,7 +197,6 @@ export async function eventRoute(c: AppContext): Promise<Response> {
     ) ?? ''
   }
 
-  const safePayload = sanitizeEvent(type, body, profile)
   const eventId = crypto.randomUUID()
   await c.env.DB.prepare(
     `INSERT INTO competition_events (id, participant_id, event_type, payload_json)
@@ -390,6 +392,13 @@ function sanitizeProfile(value: unknown) {
   return {
     lootEnabled: profile.lootEnabled !== false,
     minimumLootValue: integerValue(profile.minimumLootValue, 0, 2_147_483_647, 0),
+    minimumLootScreenshotValue: integerValue(
+      profile.minimumLootScreenshotValue,
+      0,
+      2_147_483_647,
+      0
+    ),
+    requireBothRarityAndValue: profile.requireBothRarityAndValue !== false,
     allowedLootItems: sanitizeItemRules(profile.allowedLootItems),
     ignoredLootItems: sanitizeItemRules(profile.ignoredLootItems),
     itemValueOverrides: sanitizeItemValueOverrides(profile.itemValueOverrides),
@@ -431,16 +440,21 @@ function sanitizeItemValueOverrides(value: unknown): Record<string, number> {
   return Object.fromEntries(unique.values())
 }
 
-function lootItemAllowed(
+function lootItemAccepted(
   profile: ReturnType<typeof sanitizeProfile>,
-  itemName: string,
-  itemId: number
+  item: ReturnType<typeof lootItemsFromBody>[number]
 ): boolean {
-  if (profile.ignoredLootItems.some((rule) => lootRuleMatches(rule, itemName, itemId))) return false
-  return (
-    profile.allowedLootItems.length === 0 ||
-    profile.allowedLootItems.some((rule) => lootRuleMatches(rule, itemName, itemId))
-  )
+  if (profile.ignoredLootItems.some((rule) => lootRuleMatches(rule, item.itemName, item.itemId))) {
+    return false
+  }
+  const hasAllowlist = profile.allowedLootItems.length > 0
+  const matchesAllowlist =
+    hasAllowlist &&
+    profile.allowedLootItems.some((rule) => lootRuleMatches(rule, item.itemName, item.itemId))
+  const meetsMinimum = item.totalValue >= profile.minimumLootValue
+  return profile.requireBothRarityAndValue
+    ? (!hasAllowlist || matchesAllowlist) && meetsMinimum
+    : matchesAllowlist || meetsMinimum
 }
 
 function lootRuleMatches(rule: string, itemName: string, itemId: number): boolean {
@@ -452,11 +466,7 @@ function eventAllowed(competition: Competition, type: string, body: Record<strin
   if (type === 'LOOT') {
     return (
       profile.lootEnabled &&
-      lootItemsFromBody(body).some(
-        (item) =>
-          item.totalValue >= profile.minimumLootValue &&
-          lootItemAllowed(profile, item.itemName, item.itemId)
-      )
+      lootItemsFromBody(body).some((item) => lootItemAccepted(profile, item))
     )
   }
   if (type === 'LEVEL') return profile.levelEnabled
@@ -477,11 +487,7 @@ function sanitizeEvent(
   profile: ReturnType<typeof sanitizeProfile>
 ): Record<string, unknown> {
   if (type === 'LOOT') {
-    const items = lootItemsFromBody(body).filter(
-      (item) =>
-        item.totalValue >= profile.minimumLootValue &&
-        lootItemAllowed(profile, item.itemName, item.itemId)
-    )
+    const items = lootItemsFromBody(body).filter((item) => lootItemAccepted(profile, item))
     return {
       source: stringValue(body.source, 100),
       items,
