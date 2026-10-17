@@ -75,7 +75,7 @@ Custom message patterns are case-insensitive and use `*` as the only wildcard. T
 
 ## Google Sheets settings sync
 
-The optional bound script in [`google-apps-script/Code.gs`](google-apps-script/Code.gs) adds a manual **Imaj's Events → Sync settings now** menu to the Battleship Friends `Webhook Settings` tab. It updates the webhook and event profile through the existing admin endpoint without storing the competition password or Worker admin token in a cell. Installation instructions are in [`google-apps-script/README.md`](google-apps-script/README.md).
+The optional bound script in [`google-apps-script/Code.gs`](google-apps-script/Code.gs) adds an **Imaj's Events** menu to the Battleship Friends Sheet. It can manually sync `Webhook Settings`, add approved RSNs from `All Players!B2:B`, and generate one-time RSN-change codes through the existing admin endpoints without storing the competition password or Worker admin token in a cell. Installation instructions are in [`google-apps-script/README.md`](google-apps-script/README.md).
 
 ## Deploy
 
