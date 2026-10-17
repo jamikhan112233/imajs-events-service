@@ -10,7 +10,8 @@ Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It manages
 - RSN-change codes are participant-specific, single-use, stored only as hashes, and expire after 15 minutes.
 - Discord webhook URLs are never returned to plugin clients.
 - Every event type and custom system-message pattern is revalidated against the server-owned competition profile.
-- Screenshots are accepted only for enabled loot, kill-count, and Special Kill events; each file must be JPEG and is limited to 8 MiB.
+- Re-enrolling a rostered RSN rotates its token, so an old client cannot permanently lock that roster entry.
+- Screenshots are accepted only for enabled loot, pet, kill-count, and Special Kill events; each file must be JPEG and is limited to 8 MiB.
 - Screenshot bytes are forwarded directly to Discord and are not stored in D1.
 - Discord mentions are disabled in forwarded messages.
 
@@ -54,6 +55,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
   "ignoredLootItems": ["Coins"],
   "itemValueOverrides": {"Infernal max cape": 225000},
   "lootScreenshotsEnabled": false,
+  "petEnabled": true,
+  "petScreenshotsEnabled": false,
   "levelEnabled": true,
   "deathEnabled": true,
   "killCountEnabled": true,
@@ -72,6 +75,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 Loot is received from RuneLite's Loot Tracker integration as one grouped event per source. With `requireBothRarityAndValue` set to `true`, each stack must meet `minimumLootValue` and match `allowedLootItems` when the allowlist is nonempty. With it set to `false`, meeting either condition is enough. `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates every item, removes nonqualifying stacks, and sends the remaining source drop in one Discord message. A loot screenshot is attached only when the accepted grouped total also meets `minimumLootScreenshotValue`.
 
 `itemValueOverrides` maps exact case-insensitive item names or canonical numeric item IDs to organizer-defined GP values. The plugin checks an ID override first, then a name override, then RuneLite's current price (including untradeable-to-tradeable `ItemMapping` values), and finally the built-in guide value when no mapped/current price is available.
+
+Pet events are accepted only when `petEnabled` is true. Optional pet screenshots additionally require `petScreenshotsEnabled` in the competition profile and the player's local screenshot consent.
 
 Custom message patterns are case-insensitive and use `*` as the only wildcard. The service keeps at most 50 rules of 200 characters each and independently checks every submitted custom-message event against them.
 
@@ -129,6 +134,8 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions' \
       "ignoredLootItems": [],
       "itemValueOverrides": {"Infernal max cape": 225000},
       "lootScreenshotsEnabled": false,
+      "petEnabled": true,
+      "petScreenshotsEnabled": false,
       "levelEnabled": true,
       "deathEnabled": true,
       "killCountEnabled": true,
@@ -151,7 +158,7 @@ curl -X POST 'https://YOUR-WORKER.workers.dev/api/v1/admin/competitions/imaj-sum
   --data '{"players":["Player One","Player Two"]}'
 ```
 
-Enrollment is rejected unless the entered RSN has an unclaimed roster entry. Give participants the competition name and password separately from the Worker URL.
+Enrollment is rejected unless the currently logged-in RSN is on the approved roster. Re-enrollment rotates the roster entry's token and invalidates the previous client token, which lets the real logged-in player recover an enrollment instead of leaving the RSN permanently locked.
 
 ## Generate an RSN-change code
 
