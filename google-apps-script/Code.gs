@@ -1,4 +1,5 @@
 const IMAJ_SETTINGS_SHEET = 'Webhook Settings';
+const IMAJ_PLAYERS_SHEET = 'All Players';
 const IMAJ_ADMIN_TOKEN_PROPERTY = 'IMAJ_EVENTS_ADMIN_TOKEN';
 
 function onOpen() {
@@ -6,6 +7,8 @@ function onOpen() {
     .createMenu("Imaj's Events")
     .addItem('Set or replace admin token', 'setImajEventsAdminToken')
     .addItem('Sync settings now', 'syncImajEventsSettings')
+    .addItem('Sync approved players', 'syncImajEventsPlayers')
+    .addItem('Generate RSN change code', 'generateImajRsnChangeCode')
     .addSeparator()
     .addItem('Clear saved admin token', 'clearImajEventsAdminToken')
     .addToUi();
@@ -105,6 +108,109 @@ function syncImajEventsSettings() {
     ui.alert('Settings were not synced.\n\n' + error.message);
     throw error;
   }
+}
+
+function syncImajEventsPlayers() {
+  const ui = SpreadsheetApp.getUi();
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const settingsSheet = spreadsheet.getSheetByName(IMAJ_SETTINGS_SHEET);
+  const playersSheet = spreadsheet.getSheetByName(IMAJ_PLAYERS_SHEET);
+  if (!settingsSheet) throw new Error('Missing sheet: ' + IMAJ_SETTINGS_SHEET);
+  if (!playersSheet) throw new Error('Missing sheet: ' + IMAJ_PLAYERS_SHEET);
+
+  const settings = readSettings_(settingsSheet);
+  const serviceUrl = requiredText_(settings, 'Imaj Service URL').replace(/\/+$/, '');
+  const slug = requiredText_(settings, 'Imaj Competition Slug');
+  const adminToken = requireAdminToken_();
+  if (!adminToken) return;
+
+  const lastRow = playersSheet.getLastRow();
+  const names = lastRow < 2
+    ? []
+    : playersSheet.getRange(2, 2, lastRow - 1, 1).getDisplayValues().flat();
+  const seen = {};
+  const players = names
+    .map((name) => name.replace(/\u00a0/g, ' ').trim())
+    .filter((name) => /^[A-Za-z0-9 _-]{1,12}$/.test(name))
+    .filter((name) => {
+      const normalized = name.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+      if (seen[normalized]) return false;
+      seen[normalized] = true;
+      return true;
+    });
+  if (!players.length) {
+    ui.alert('No valid RSNs were found in All Players column B.');
+    return;
+  }
+
+  const result = workerRequest_(
+    'post',
+    serviceUrl + '/api/v1/admin/competitions/' + encodeURIComponent(slug) + '/players',
+    adminToken,
+    { players: players }
+  );
+  ui.alert(
+    'Approved player sync finished.\n\nSubmitted: ' + result.submitted + '\nNewly added: ' + result.added
+  );
+}
+
+function generateImajRsnChangeCode() {
+  const ui = SpreadsheetApp.getUi();
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(IMAJ_SETTINGS_SHEET);
+  if (!sheet) throw new Error('Missing sheet: ' + IMAJ_SETTINGS_SHEET);
+  const settings = readSettings_(sheet);
+  const serviceUrl = requiredText_(settings, 'Imaj Service URL').replace(/\/+$/, '');
+  const slug = requiredText_(settings, 'Imaj Competition Slug');
+  const adminToken = requireAdminToken_();
+  if (!adminToken) return;
+
+  const response = ui.prompt(
+    'Generate one-time RSN change code',
+    "Enter the participant's CURRENT registered RSN.",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+  const rsn = response.getResponseText().replace(/\u00a0/g, ' ').trim();
+  if (!/^[A-Za-z0-9 _-]{1,12}$/.test(rsn)) {
+    ui.alert('Enter a valid current RSN of 1–12 characters.');
+    return;
+  }
+
+  const result = workerRequest_(
+    'post',
+    serviceUrl + '/api/v1/admin/competitions/' + encodeURIComponent(slug) + '/rsn-codes',
+    adminToken,
+    { rsn: rsn }
+  );
+  ui.alert(
+    'One-time code for ' + rsn + ':\n\n' + result.code
+      + '\n\nExpires: ' + result.expiresAt + '\nThis code can be used only once.'
+  );
+}
+
+function requireAdminToken_() {
+  const token = PropertiesService.getUserProperties().getProperty(IMAJ_ADMIN_TOKEN_PROPERTY);
+  if (!token) {
+    SpreadsheetApp.getUi().alert("Use Imaj's Events → Set or replace admin token first.");
+    return '';
+  }
+  return token;
+}
+
+function workerRequest_(method, url, adminToken, body) {
+  const response = UrlFetchApp.fetch(url, {
+    method: method,
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + adminToken },
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  const text = response.getContentText();
+  if (status < 200 || status >= 300) {
+    throw new Error('Worker returned HTTP ' + status + ': ' + text);
+  }
+  return text ? JSON.parse(text) : {};
 }
 
 function readSettings_(sheet) {
