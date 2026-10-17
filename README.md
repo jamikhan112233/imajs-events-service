@@ -16,6 +16,12 @@ Cloudflare Worker + D1 service for the Imaj's Events RuneLite plugin. It manages
 
 Treat the `ADMIN_TOKEN`, D1 database, participant enrollment tokens, and Discord webhook URLs as secrets.
 
+## Data retention and support
+
+The service stores participant identity, hashed enrollment credentials, approved-roster data, and accepted event metadata in D1 until the competition organizer requests removal. Raw competition passwords and raw enrollment tokens are never stored. Uploaded screenshots are forwarded directly to the configured Discord webhook and are not retained by the service. The plugin and service have no paid or subscription-gated functionality.
+
+Questions and data-removal requests can be submitted through this repository's [issue tracker](https://github.com/jamikhan112233/imajs-events-service/issues).
+
 ## API
 
 Participant routes:
