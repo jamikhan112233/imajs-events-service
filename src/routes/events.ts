@@ -15,6 +15,7 @@ const RSN_PATTERN = /^[A-Za-z0-9 _-]{1,12}$/
 const GAME_TIME_PATTERN = /^(?:\d+:){1,2}\d{2}(?:\.\d+)?$/
 const EVENT_TYPES = new Set([
   'LOOT',
+  'PET',
   'LEVEL',
   'DEATH',
   'KILL_COUNT',
@@ -49,10 +50,26 @@ export async function enrollRoute(c: AppContext): Promise<Response> {
     .bind(row.id, normalizeRsn(rsn))
     .first<{ participant_id: string | null }>()
   if (!rosterEntry) return error(c, 'That RSN is not on the competition roster', 403)
-  if (rosterEntry.participant_id) return error(c, 'That roster entry is already enrolled', 409)
 
   const token = randomHex(32)
   const tokenHash = await sha256(token)
+  if (rosterEntry.participant_id) {
+    const result = await c.env.DB.prepare(
+      `UPDATE participants
+       SET token_hash = ?, rsn = ?, normalized_rsn = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND competition_id = ?`
+    )
+      .bind(tokenHash, rsn, normalizeRsn(rsn), rosterEntry.participant_id, row.id)
+      .run()
+    if ((result.meta.changes ?? 0) !== 1) {
+      return error(c, 'Unable to refresh that enrollment', 409)
+    }
+    return c.json({
+      enrollmentToken: token,
+      profile: profileFor(row, rsn),
+    })
+  }
+
   const participantId = crypto.randomUUID()
   try {
     const results = await c.env.DB.batch([
@@ -172,6 +189,7 @@ export async function eventRoute(c: AppContext): Promise<Response> {
     screenshot &&
     !(
       (type === 'KILL_COUNT' && profile.killCountScreenshotsEnabled) ||
+      (type === 'PET' && profile.petScreenshotsEnabled) ||
       (type === 'LOOT' &&
         profile.lootScreenshotsEnabled &&
         Number(safePayload.totalValue ?? 0) >= profile.minimumLootScreenshotValue)
@@ -417,6 +435,8 @@ function sanitizeProfile(value: unknown) {
     ignoredLootItems: sanitizeItemRules(profile.ignoredLootItems),
     itemValueOverrides: sanitizeItemValueOverrides(profile.itemValueOverrides),
     lootScreenshotsEnabled: profile.lootScreenshotsEnabled === true,
+    petEnabled: profile.petEnabled !== false,
+    petScreenshotsEnabled: profile.petScreenshotsEnabled === true,
     levelEnabled: profile.levelEnabled === true,
     deathEnabled: profile.deathEnabled === true,
     killCountEnabled: profile.killCountEnabled === true,
@@ -483,6 +503,7 @@ function eventAllowed(competition: Competition, type: string, body: Record<strin
       lootItemsFromBody(body).some((item) => lootItemAccepted(profile, item))
     )
   }
+  if (type === 'PET') return profile.petEnabled
   if (type === 'LEVEL') return profile.levelEnabled
   if (type === 'DEATH') return profile.deathEnabled
   if (type === 'KILL_COUNT') return profile.killCountEnabled
@@ -506,6 +527,13 @@ function sanitizeEvent(
       source: stringValue(body.source, 100),
       items,
       totalValue: items.reduce((sum, item) => sum + item.totalValue, 0),
+    }
+  }
+  if (type === 'PET') {
+    return {
+      petName: stringValue(body.petName, 100) || 'Unknown pet',
+      duplicate: body.duplicate === true,
+      gameMessage: stringValue(body.gameMessage, 500),
     }
   }
   if (type === 'LEVEL') {
@@ -737,6 +765,14 @@ function discordDescription(type: string, payload: Record<string, unknown>, rsn:
       ...itemLines,
       '',
       `**From:** ${escapeDiscord(String(payload.source))}`,
+    ].join('\n')
+  }
+  if (type === 'PET') {
+    return [
+      '**Pet Drop**',
+      '',
+      `**${player}** received **${escapeDiscord(String(payload.petName))}**.`,
+      `Duplicate: **${payload.duplicate === true ? 'Yes' : 'No'}**`,
     ].join('\n')
   }
   if (type === 'LEVEL') {
