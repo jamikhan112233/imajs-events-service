@@ -2,9 +2,12 @@ const IMAJ_SETTINGS_SHEET = 'Webhook Settings';
 const IMAJ_PLAYERS_SHEET = 'All Players';
 const IMAJ_ADMIN_TOKEN_PROPERTY = 'IMAJ_EVENTS_ADMIN_TOKEN';
 
-function onOpen() {
+function imajEventsOnOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Imaj's Events")
+    .addItem('Create competition from this Sheet', 'showCreateImajCompetitionDialog')
+    .addItem('Change competition password', 'showChangeImajPasswordDialog')
+    .addSeparator()
     .addItem('Set or replace admin token', 'setImajEventsAdminToken')
     .addItem('Sync settings now', 'syncImajEventsSettings')
     .addItem('Sync approved players', 'syncImajEventsPlayers')
@@ -12,6 +15,124 @@ function onOpen() {
     .addSeparator()
     .addItem('Clear saved admin token', 'clearImajEventsAdminToken')
     .addToUi();
+}
+
+function showCreateImajCompetitionDialog() {
+  showImajPasswordDialog_('create');
+}
+
+function showChangeImajPasswordDialog() {
+  showImajPasswordDialog_('change');
+}
+
+function showImajPasswordDialog_(mode) {
+  const isCreate = mode === 'create';
+  const title = isCreate ? 'Create Imaj competition' : 'Change competition password';
+  const buttonText = isCreate ? 'Create competition' : 'Change password';
+  const serverCall = isCreate
+    ? 'createImajEventsCompetition'
+    : 'changeImajEventsPassword';
+  const html = HtmlService.createHtmlOutput(`
+    <!doctype html>
+    <html>
+      <head>
+        <base target="_top">
+        <style>
+          body { font: 14px Arial, sans-serif; padding: 16px; color: #202124; }
+          label { display: block; margin: 12px 0 4px; font-weight: 600; }
+          input { box-sizing: border-box; width: 100%; padding: 8px; }
+          button { margin-top: 16px; padding: 8px 14px; }
+          #status { margin-top: 12px; white-space: pre-wrap; }
+        </style>
+      </head>
+      <body>
+        <div>The password must contain at least 8 characters. It will be sent directly to the Worker and will not be stored in this spreadsheet.</div>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="new-password">
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" type="password" autocomplete="new-password">
+        <button id="submit" onclick="submitPassword()">${buttonText}</button>
+        <div id="status"></div>
+        <script>
+          function submitPassword() {
+            const password = document.getElementById('password').value;
+            const confirm = document.getElementById('confirm').value;
+            const status = document.getElementById('status');
+            if (password.length < 8) {
+              status.textContent = 'Password must contain at least 8 characters.';
+              return;
+            }
+            if (password !== confirm) {
+              status.textContent = 'The two passwords do not match.';
+              return;
+            }
+            document.getElementById('submit').disabled = true;
+            status.textContent = 'Working…';
+            google.script.run
+              .withSuccessHandler(function (message) {
+                status.textContent = message;
+                setTimeout(function () { google.script.host.close(); }, 1400);
+              })
+              .withFailureHandler(function (error) {
+                document.getElementById('submit').disabled = false;
+                status.textContent = error && error.message ? error.message : String(error);
+              })
+              [${JSON.stringify(serverCall)}](password);
+          }
+        </script>
+      </body>
+    </html>
+  `).setWidth(420).setHeight(330);
+  SpreadsheetApp.getUi().showModalDialog(html, title);
+}
+
+function createImajEventsCompetition(password) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(IMAJ_SETTINGS_SHEET);
+  if (!sheet) throw new Error('Missing sheet: ' + IMAJ_SETTINGS_SHEET);
+  const settings = readSettings_(sheet);
+  const serviceUrl = requiredText_(settings, 'Imaj Service URL').replace(/\/+$/, '');
+  const name = requiredText_(settings, 'Imaj Competition Name');
+  const webhookUrl = requiredText_(settings, 'Webhook URL');
+  const adminToken = requireAdminToken_();
+  if (!adminToken) throw new Error('Set the Imaj Events admin token first.');
+  if (String(password || '').length < 8) throw new Error('Password must contain at least 8 characters.');
+
+  const result = workerRequest_(
+    'post',
+    serviceUrl + '/api/v1/admin/competitions',
+    adminToken,
+    {
+      name: name,
+      password: password,
+      webhookUrl: webhookUrl,
+      profile: profileFromSettings_(settings),
+    }
+  );
+  writeStatus_(sheet, 'Imaj Competition Slug', result.slug);
+  writeStatus_(sheet, 'Last Imaj Sync', new Date());
+  writeStatus_(sheet, 'Last Imaj Sync Status', 'Created competition — ' + result.name);
+  return 'Created “' + result.name + '”. The competition slug is ' + result.slug + '.';
+}
+
+function changeImajEventsPassword(password) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(IMAJ_SETTINGS_SHEET);
+  if (!sheet) throw new Error('Missing sheet: ' + IMAJ_SETTINGS_SHEET);
+  const settings = readSettings_(sheet);
+  const serviceUrl = requiredText_(settings, 'Imaj Service URL').replace(/\/+$/, '');
+  const slug = requiredText_(settings, 'Imaj Competition Slug');
+  const adminToken = requireAdminToken_();
+  if (!adminToken) throw new Error('Set the Imaj Events admin token first.');
+  if (String(password || '').length < 8) throw new Error('Password must contain at least 8 characters.');
+
+  workerRequest_(
+    'patch',
+    serviceUrl + '/api/v1/admin/competitions/' + encodeURIComponent(slug),
+    adminToken,
+    { password: password }
+  );
+  writeStatus_(sheet, 'Last Imaj Sync', new Date());
+  writeStatus_(sheet, 'Last Imaj Sync Status', 'Competition password changed successfully');
+  return 'Competition password changed successfully.';
 }
 
 function setImajEventsAdminToken() {
@@ -51,28 +172,10 @@ function syncImajEventsSettings() {
     return;
   }
 
-  const profile = {
-    lootEnabled: booleanSetting_(settings, 'Enable loot'),
-    minimumLootValue: integerSetting_(settings, 'Min Loot value'),
-    minimumLootScreenshotValue: integerSetting_(settings, 'Screenshot Min Value'),
-    requireBothRarityAndValue: booleanSetting_(settings, 'Require both Rarity and Value'),
-    allowedLootItems: listSetting_(settings, 'Item Allowlist'),
-    ignoredLootItems: listSetting_(settings, 'Ignored Loot Items'),
-    itemValueOverrides: overrideSetting_(settings, 'Item Value Overrides'),
-    lootScreenshotsEnabled: booleanSetting_(settings, 'Loot Screenshots Enabled'),
-    levelEnabled: booleanSetting_(settings, 'Level Notifications Enabled'),
-    deathEnabled: booleanSetting_(settings, 'Death Notifications Enabled'),
-    killCountEnabled: booleanSetting_(settings, 'Kill Count Notifications Enabled'),
-    setupCaptureEnabled: booleanSetting_(settings, 'Setup Value Capture Enabled'),
-    killCountScreenshotsEnabled: booleanSetting_(settings, 'Completion Screenshots Enabled'),
-    specialKillEnabled: booleanSetting_(settings, 'Special Kill Enabled'),
-    speedrunEnabled: booleanSetting_(settings, 'Speedrun Notifications Enabled'),
-    customChatEnabled: booleanSetting_(settings, 'Enable Chat Notifications'),
-    customChatMessages: listSetting_(settings, 'Message Filters')
-      .filter((rule) => rule.toLowerCase() !== '::triggerdink'),
-  };
+  const profile = profileFromSettings_(settings);
 
   const body = {
+    name: requiredText_(settings, 'Imaj Competition Name'),
     webhookUrl: textSetting_(settings, 'Webhook URL'),
     profile: profile,
   };
@@ -101,13 +204,36 @@ function syncImajEventsSettings() {
         + profile.ignoredLootItems.length + ' ignored, '
         + profile.customChatMessages.length + ' chat rules'
     );
-    ui.alert("Imaj's Events settings synced successfully.");
+    ui.alert("Imaj's Events settings and competition name synced successfully.");
   } catch (error) {
     writeStatus_(sheet, 'Last Imaj Sync', new Date());
     writeStatus_(sheet, 'Last Imaj Sync Status', 'ERROR — ' + error.message);
     ui.alert('Settings were not synced.\n\n' + error.message);
     throw error;
   }
+}
+
+function profileFromSettings_(settings) {
+  return {
+    lootEnabled: booleanSetting_(settings, 'Enable loot'),
+    minimumLootValue: integerSetting_(settings, 'Min Loot value'),
+    minimumLootScreenshotValue: integerSetting_(settings, 'Screenshot Min Value'),
+    requireBothRarityAndValue: booleanSetting_(settings, 'Require both Rarity and Value'),
+    allowedLootItems: listSetting_(settings, 'Item Allowlist'),
+    ignoredLootItems: listSetting_(settings, 'Ignored Loot Items'),
+    itemValueOverrides: overrideSetting_(settings, 'Item Value Overrides'),
+    lootScreenshotsEnabled: booleanSetting_(settings, 'Loot Screenshots Enabled'),
+    levelEnabled: booleanSetting_(settings, 'Level Notifications Enabled'),
+    deathEnabled: booleanSetting_(settings, 'Death Notifications Enabled'),
+    killCountEnabled: booleanSetting_(settings, 'Kill Count Notifications Enabled'),
+    setupCaptureEnabled: booleanSetting_(settings, 'Setup Value Capture Enabled'),
+    killCountScreenshotsEnabled: booleanSetting_(settings, 'Completion Screenshots Enabled'),
+    specialKillEnabled: booleanSetting_(settings, 'Special Kill Enabled'),
+    speedrunEnabled: booleanSetting_(settings, 'Speedrun Notifications Enabled'),
+    customChatEnabled: booleanSetting_(settings, 'Enable Chat Notifications'),
+    customChatMessages: listSetting_(settings, 'Message Filters')
+      .filter((rule) => rule.toLowerCase() !== '::triggerdink'),
+  };
 }
 
 function syncImajEventsPlayers() {
