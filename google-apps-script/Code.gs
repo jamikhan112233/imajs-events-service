@@ -223,6 +223,8 @@ function profileFromSettings_(settings) {
     ignoredLootItems: listSetting_(settings, 'Ignored Loot Items'),
     itemValueOverrides: overrideSetting_(settings, 'Item Value Overrides'),
     lootScreenshotsEnabled: booleanSetting_(settings, 'Loot Screenshots Enabled'),
+    petEnabled: booleanSettingDefault_(settings, 'Pet Notifications Enabled', true),
+    petScreenshotsEnabled: booleanSetting_(settings, 'Pet Screenshots Enabled'),
     levelEnabled: booleanSetting_(settings, 'Level Notifications Enabled'),
     deathEnabled: booleanSetting_(settings, 'Death Notifications Enabled'),
     killCountEnabled: booleanSetting_(settings, 'Kill Count Notifications Enabled'),
@@ -363,6 +365,11 @@ function requiredText_(settings, key) {
 function booleanSetting_(settings, key) {
   const value = settings[key];
   return value === true || String(value).trim().toLowerCase() === 'true';
+}
+
+function booleanSettingDefault_(settings, key, fallback) {
+  if (!Object.prototype.hasOwnProperty.call(settings, key)) return fallback;
+  return booleanSetting_(settings, key);
 }
 
 function integerSetting_(settings, key) {

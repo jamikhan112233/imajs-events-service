@@ -8,7 +8,7 @@ This bound Google Apps Script adds an **Imaj's Events** menu to the Battleship F
 2. Add a new script file named `ImajEvents.gs` and paste this directory's `Code.gs` into it. Leave any existing `Code.gs` file untouched.
 3. In **Triggers**, add a spreadsheet **On open** trigger for `imajEventsOnOpen`, then save and reload the Google Sheet.
 4. Choose **Imaj's Events → Set or replace admin token** and paste the Cloudflare Worker `ADMIN_TOKEN`.
-5. Review `Min Loot value`, the allowlist, and every checkbox.
+5. Review `Min Loot value`, the allowlist, and every checkbox. Add `Pet Notifications Enabled` (TRUE/FALSE) and `Pet Screenshots Enabled` (TRUE/FALSE) rows to `Webhook Settings`; if the pet notification row is absent, pet events default to enabled.
 6. Choose **Imaj's Events → Sync settings now** and approve Google's requested permissions.
 
 The token is stored in the current organizer's Apps Script user properties. It is not written to a spreadsheet cell. Competition passwords are entered in masked dialogs and sent directly to Cloudflare; they are never written to a spreadsheet cell.
@@ -40,3 +40,9 @@ The bound script is copied with the spreadsheet, but installable triggers are no
 - `Require both Rarity and Value = FALSE`: an item qualifies by matching the allowlist **or** meeting `Min Loot value`.
 - `Ignored Loot Items` always wins.
 - `Screenshot Min Value` applies to the accepted grouped loot total and controls whether a loot screenshot is attached.
+
+## Pet behavior
+
+- `Pet Notifications Enabled` controls whether the Worker accepts pet events.
+- `Pet Screenshots Enabled` permits pet screenshots at the competition level; each player must separately enable pet screenshots in RuneLite.
+- Pet-name identification is most reliable when RuneScape untradeable-drop notifications are enabled.
