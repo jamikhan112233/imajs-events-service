@@ -292,6 +292,20 @@ export async function updateCompetitionRoute(c: AppContext): Promise<Response> {
   if (!existing) return error(c, 'Competition not found', 404)
 
   const body = await safeJson(c)
+  const name = body.name === undefined
+    ? existing.name
+    : stringValue(body.name, 80)
+  if (!name) return error(c, 'Competition name is required', 400)
+
+  if (name.toLocaleLowerCase() !== existing.name.toLocaleLowerCase()) {
+    const duplicate = await c.env.DB.prepare(
+      'SELECT id FROM competitions WHERE lower(name) = lower(?) AND id != ? LIMIT 1'
+    )
+      .bind(name, existing.id)
+      .first<{ id: number }>()
+    if (duplicate) return error(c, 'A competition with that name already exists', 409)
+  }
+
   const webhookCandidate = stringValue(body.webhookUrl, 500)
   const webhookUrl = webhookCandidate || existing.webhook_url
   if (!validDiscordWebhook(webhookUrl)) {
@@ -313,12 +327,12 @@ export async function updateCompetitionRoute(c: AppContext): Promise<Response> {
 
   await c.env.DB.prepare(
     `UPDATE competitions
-     SET webhook_url = ?, profile_json = ?, password_salt = ?, password_hash = ?
+     SET name = ?, webhook_url = ?, profile_json = ?, password_salt = ?, password_hash = ?
      WHERE id = ?`
   )
-    .bind(webhookUrl, JSON.stringify(profile), passwordSalt, passwordHash, existing.id)
+    .bind(name, webhookUrl, JSON.stringify(profile), passwordSalt, passwordHash, existing.id)
     .run()
-  return c.json({ slug, name: existing.name, profile })
+  return c.json({ slug, name, profile })
 }
 
 export async function addPlayersRoute(c: AppContext): Promise<Response> {
