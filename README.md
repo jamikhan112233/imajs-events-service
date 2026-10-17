@@ -42,6 +42,8 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 {
   "lootEnabled": true,
   "minimumLootValue": 1000000,
+  "minimumLootScreenshotValue": 5000000,
+  "requireBothRarityAndValue": true,
   "allowedLootItems": ["Twisted bow", "Godsword shard *", "20997"],
   "ignoredLootItems": ["Coins"],
   "itemValueOverrides": {"Infernal max cape": 225000},
@@ -61,7 +63,7 @@ Organizer routes require `Authorization: Bearer <ADMIN_TOKEN>`:
 }
 ```
 
-Loot is received from RuneLite's Loot Tracker integration as one grouped event per source. `minimumLootValue` is still applied to each stack. `allowedLootItems` is an allowlist (empty means all), while `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates every item, removes nonqualifying stacks, and sends the remaining source drop in one Discord message.
+Loot is received from RuneLite's Loot Tracker integration as one grouped event per source. With `requireBothRarityAndValue` set to `true`, each stack must meet `minimumLootValue` and match `allowedLootItems` when the allowlist is nonempty. With it set to `false`, meeting either condition is enough. `ignoredLootItems` always wins. Item rules accept exact case-insensitive names, numeric item IDs, and `*` wildcards. The service revalidates every item, removes nonqualifying stacks, and sends the remaining source drop in one Discord message. A loot screenshot is attached only when the accepted grouped total also meets `minimumLootScreenshotValue`.
 
 `itemValueOverrides` maps exact case-insensitive item names or canonical numeric item IDs to organizer-defined GP values. The plugin checks an ID override first, then a name override, then RuneLite's current price (including untradeable-to-tradeable `ItemMapping` values), and finally the built-in guide value when no mapped/current price is available.
 
@@ -70,6 +72,10 @@ Custom message patterns are case-insensitive and use `*` as the only wildcard. T
 `setupCaptureEnabled` permits one combined equipment-plus-inventory risk-value total. The KC Discord text omits that value; the locally rendered screenshot panel contains its item-by-item audit and identifies override, GE, mapped, and guide fallback values. Individual setup item values are not submitted to the service. `killCountScreenshotsEnabled` and `lootScreenshotsEnabled` permit their respective JPEG uploads, but the player must also enable each screenshot type locally in RuneLite.
 
 `specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time, plus starting/ending risk totals and risk value used.
+
+## Google Sheets settings sync
+
+The optional bound script in [`google-apps-script/Code.gs`](google-apps-script/Code.gs) adds a manual **Imaj's Events → Sync settings now** menu to the Battleship Friends `Webhook Settings` tab. It updates the webhook and event profile through the existing admin endpoint without storing the competition password or Worker admin token in a cell. Installation instructions are in [`google-apps-script/README.md`](google-apps-script/README.md).
 
 ## Deploy
 
