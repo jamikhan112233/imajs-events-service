@@ -12,6 +12,7 @@ function imajEventsOnOpen() {
     .addItem('Sync settings now', 'syncImajEventsSettings')
     .addItem('Sync approved players', 'syncImajEventsPlayers')
     .addItem('Generate RSN change code', 'generateImajRsnChangeCode')
+    .addItem('Migrate RSN in Sheet', 'migrateImajRsnInSheet')
     .addSeparator()
     .addItem('Clear saved admin token', 'clearImajEventsAdminToken')
     .addToUi();
@@ -314,6 +315,155 @@ function generateImajRsnChangeCode() {
     'One-time code for ' + rsn + ':\n\n' + result.code
       + '\n\nExpires: ' + result.expiresAt + '\nThis code can be used only once.'
   );
+}
+
+
+function migrateImajRsnInSheet() {
+  const ui = SpreadsheetApp.getUi();
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const oldResponse = ui.prompt(
+    'Migrate RSN in Sheet',
+    "Enter the player's OLD RSN. Run this only after the player successfully changes their RSN in RuneLite.",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (oldResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const oldRsn = oldResponse.getResponseText().replace(/\u00a0/g, ' ').trim();
+  if (!/^[A-Za-z0-9 _-]{1,12}$/.test(oldRsn)) {
+    ui.alert('Enter a valid old RSN of 1–12 characters.');
+    return;
+  }
+
+  const newResponse = ui.prompt(
+    'Migrate RSN in Sheet',
+    "Enter the player's NEW RSN.",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (newResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const newRsn = newResponse.getResponseText().replace(/\u00a0/g, ' ').trim();
+  if (!/^[A-Za-z0-9 _-]{1,12}$/.test(newRsn)) {
+    ui.alert('Enter a valid new RSN of 1–12 characters.');
+    return;
+  }
+
+  const normalizedOld = normalizeImajRsn_(oldRsn);
+  const normalizedNew = normalizeImajRsn_(newRsn);
+  if (normalizedOld === normalizedNew) {
+    ui.alert('The old and new RSNs are equivalent. Nothing was changed.');
+    return;
+  }
+
+  const targets = [
+    { sheetName: 'All Players', column: 2, startRow: 2 },
+    { sheetName: 'Submissions', column: 3, startRow: 2 },
+    { sheetName: 'Preloads', column: 3, startRow: 2 },
+  ];
+
+  const newRosterMatches = findImajRsnRows_(
+    spreadsheet,
+    [targets[0]],
+    normalizedNew
+  );
+  if (newRosterMatches.length && newRosterMatches[0].rows.length) {
+    ui.alert(
+      'Migration stopped: ' + newRsn + ' already exists in All Players column B. '
+        + 'Resolve that duplicate before migrating.'
+    );
+    return;
+  }
+
+  let matches = findImajRsnRows_(spreadsheet, targets, normalizedOld);
+  const total = matches.reduce((sum, match) => sum + match.rows.length, 0);
+  if (!total) {
+    ui.alert('No exact player-name matches were found for ' + oldRsn + '. Nothing was changed.');
+    return;
+  }
+
+  const summary = matches
+    .filter((match) => match.sheet)
+    .map((match) => match.sheetName + ': ' + match.rows.length)
+    .join('\n');
+  const confirmation = ui.alert(
+    'Confirm RSN migration',
+    'Replace ' + oldRsn + ' with ' + newRsn + ' in:\n\n' + summary
+      + '\n\nTotal cells: ' + total
+      + '\n\nThis updates historical submission names and cannot be automatically undone.',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirmation !== ui.Button.YES) return;
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) {
+    ui.alert('The Sheet is busy. Wait a moment and try the migration again.');
+    return;
+  }
+
+  try {
+    matches = findImajRsnRows_(spreadsheet, targets, normalizedOld);
+    let updated = 0;
+    matches.forEach((match) => {
+      if (!match.sheet || !match.rows.length) return;
+      setImajRsnRows_(match.sheet, match.column, match.rows, newRsn);
+      updated += match.rows.length;
+    });
+    SpreadsheetApp.flush();
+    ui.alert(
+      'RSN migration complete',
+      'Updated ' + updated + ' cells from ' + oldRsn + ' to ' + newRsn + '.',
+      ui.ButtonSet.OK
+    );
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function findImajRsnRows_(spreadsheet, targets, normalizedRsn) {
+  return targets.map((target) => {
+    const sheet = spreadsheet.getSheetByName(target.sheetName);
+    const rows = [];
+    if (sheet && sheet.getLastRow() >= target.startRow) {
+      const values = sheet
+        .getRange(target.startRow, target.column, sheet.getLastRow() - target.startRow + 1, 1)
+        .getDisplayValues();
+      values.forEach((row, index) => {
+        if (normalizeImajRsn_(row[0]) === normalizedRsn) {
+          rows.push(target.startRow + index);
+        }
+      });
+    }
+    return {
+      sheet: sheet,
+      sheetName: target.sheetName,
+      column: target.column,
+      rows: rows,
+    };
+  });
+}
+
+function setImajRsnRows_(sheet, column, rows, newRsn) {
+  let blockStart = rows[0];
+  let previous = rows[0];
+
+  for (let index = 1; index <= rows.length; index++) {
+    const current = rows[index];
+    if (index < rows.length && current === previous + 1) {
+      previous = current;
+      continue;
+    }
+
+    sheet.getRange(blockStart, column, previous - blockStart + 1, 1).setValue(newRsn);
+    blockStart = current;
+    previous = current;
+  }
+}
+
+function normalizeImajRsn_(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
 }
 
 function requireAdminToken_() {
