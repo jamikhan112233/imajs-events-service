@@ -21,6 +21,7 @@ The token is stored in the current organizer's Apps Script user properties. It i
 - Changing **Imaj Competition Name** and choosing **Sync settings now** renames the existing competition. The slug remains stable so enrolled players and stored events remain attached.
 - **Sync approved players** submits valid unique RSNs from `All Players!B2:B`; existing roster entries are left unchanged.
 - **Generate RSN change code** prompts for an enrolled participant's current RSN and displays a single-use 15-minute code without writing it to the Sheet.
+- **Migrate RSN in Sheet** is run after the player successfully redeems the code in RuneLite. It previews and confirms exact RuneScape-normalized replacements in `All Players!B`, `Submissions!C`, and `Preloads!C`; it stops if the new RSN already exists in `All Players`.
 - **Clear saved admin token** removes the token stored for the current Google user.
 
 ## Starting another competition from a copied Sheet
