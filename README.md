@@ -82,7 +82,7 @@ Custom message patterns are case-insensitive and use `*` as the only wildcard. T
 
 `setupCaptureEnabled` permits one combined equipment-plus-inventory risk-value total. The KC Discord text omits that value; the locally rendered screenshot panel contains its item-by-item audit and identifies override, GE, mapped, and guide fallback values. Individual setup item values are not submitted to the service. `killCountScreenshotsEnabled` and `lootScreenshotsEnabled` permit their respective JPEG uploads, but the player must also enable each screenshot type locally in RuneLite.
 
-`specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time, plus starting/ending risk totals and risk value used.
+`specialKillEnabled` permits the player-initiated Special Kill workflow. It never starts automatically. The event requires starting and ending JPEGs and the official game-generated completion time when available, plus starting/ending risk totals and risk value used. Special Kill also reports the nearby in-scene RuneScape names and a boolean indicating whether the starting setup contained a Twisted bow, Scythe of vitur, or Tumeken's shadow. A `DKs` attempt is accepted after Rex, Prime, and Supreme without an official game time.
 
 ## Google Sheets settings sync
 

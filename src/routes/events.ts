@@ -203,7 +203,11 @@ export async function eventRoute(c: AppContext): Promise<Response> {
   ) {
     return error(c, 'Special Kill requires organizer approval and both screenshots', 403)
   }
-  if (type === 'SPECIAL_KILL' && !GAME_TIME_PATTERN.test(stringValue(body.gameTime, 30))) {
+  if (
+    type === 'SPECIAL_KILL' &&
+    !GAME_TIME_PATTERN.test(stringValue(body.gameTime, 30)) &&
+    !isDagannothKingsSet(body)
+  ) {
     return error(c, 'Special Kill requires an official game time', 400)
   }
   if (type !== 'SPECIAL_KILL' && (startingScreenshot || endingScreenshot)) {
@@ -571,6 +575,8 @@ function sanitizeEvent(
       killCount: integerValue(body.killCount, 0, 2_147_483_647, 0),
       gameTime: stringValue(body.gameTime, 30),
       gameTimeMessage: stringValue(body.gameTimeMessage, 500),
+      nearbyPlayers: rsnList(body.nearbyPlayers),
+      startingContainsMegaRare: body.startingContainsMegaRare === true,
       startingGuideValue,
       endingGuideValue,
       guideValueUsed: Math.max(0, startingGuideValue - endingGuideValue),
@@ -725,6 +731,27 @@ function stringValue(value: unknown, maxLength: number): string {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : ''
 }
 
+function rsnList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const supplied of value.slice(0, 100)) {
+    const rsn = stringValue(supplied, 12)
+    const normalized = normalizeRsn(rsn)
+    if (!RSN_PATTERN.test(rsn) || seen.has(normalized)) continue
+    seen.add(normalized)
+    result.push(rsn)
+  }
+  return result
+}
+
+function isDagannothKingsSet(body: Record<string, unknown>): boolean {
+  return (
+    normalizeRsn(stringValue(body.source, 100)) === 'dagannoth kings' &&
+    stringValue(body.gameTime, 30).toUpperCase() === 'N/A'
+  )
+}
+
 function integerValue(value: unknown, minimum: number, maximum: number, fallback: number): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
@@ -787,12 +814,17 @@ function discordDescription(type: string, payload: Record<string, unknown>, rsn:
     ].join('\n')
   }
   if (type === 'SPECIAL_KILL') {
+    const nearbyPlayers = Array.isArray(payload.nearbyPlayers)
+      ? payload.nearbyPlayers.map((name) => escapeDiscord(String(name))).join(', ')
+      : ''
     return [
       '**Special Kill**',
       '',
       `**${player}** completed **${escapeDiscord(String(payload.source))}**.`,
       `Kill count: **${payload.killCount}**`,
       `Official game time: **${escapeDiscord(String(payload.gameTime))}**`,
+      `Nearby players: **${nearbyPlayers || player}**`,
+      `Starting setup contains mega rare: **${payload.startingContainsMegaRare === true ? 'Yes' : 'No'}**`,
       `Starting risk value: **${formatGp(payload.startingGuideValue)} gp**`,
       `Ending risk value: **${formatGp(payload.endingGuideValue)} gp**`,
       `Risk value used: **${formatGp(payload.guideValueUsed)} gp**`,
